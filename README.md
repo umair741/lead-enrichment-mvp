@@ -1,220 +1,155 @@
-# Lead Automation MVP
+# 🚀 Lead Enrichment MVP (France Optimized)
 
-An automated lead enrichment pipeline that reads company names from a Google Sheet, scrapes their websites for contact details, scores the lead quality, and writes enriched data back to the sheet.
+Automatically enriches a list of company names with key contact details (website, email, phone, and LinkedIn) scraped from public web sources, then writes the results back to a Google Sheet.
 
----
-
-## What It Does
-
-```
-Google Sheet (Input)          Enrichment Engine              Google Sheet (Output)
-┌──────────────┐    ──►    ┌─────────────────────┐    ──►   ┌──────────────────────┐
-│ Company Name │           │ 1. Find Website     │          │ Company              │
-│ (e.g. Apple) │           │    (Clearbit/DDG/    │          │ Website              │
-│              │           │     Bing search)     │          │ Phone                │
-│              │           │ 2. Crawl Homepage    │          │ Email                │
-│              │           │    + /contact page   │          │ LinkedIn             │
-│              │           │ 3. Extract Email,    │          │ Source URL            │
-│              │           │    Phone, LinkedIn   │          │ Status               │
-│              │           │ 4. Clean & Score     │          │ Quality Score (0-100)│
-└──────────────┘           └─────────────────────┘          └──────────────────────┘
-```
-
-### Pipeline Steps
-
-1. **Read** company names from your Google Sheet
-2. **Deduplicate** to avoid processing the same company twice
-3. **Search** for the company website using 4 sources:
-   - **Clearbit Autocomplete API** (free, no API key needed) — most reliable
-   - **DuckDuckGo Instant Answer API** — structured JSON fallback
-   - **DuckDuckGo HTML Search** — web search fallback
-   - **Bing Search** — last resort
-4. **Crawl** the discovered website:
-   - Scrapes the homepage for emails, phones, and LinkedIn links
-   - Automatically finds and crawls `/contact`, `/about`, `/team` subpages
-   - Checks `mailto:` and `tel:` HTML links (most reliable source)
-5. **Clean** the extracted data:
-   - Validates email format
-   - Standardizes phone number formatting
-   - Prefers personal emails over generic ones (e.g. `info@`, `support@`)
-6. **Score** each lead (0 to 100):
-   - Email found: **+35 points**
-   - Phone found: **+25 points**
-   - LinkedIn found: **+25 points**
-   - Website found: **+15 points**
-7. **Write back** enriched data to the Google Sheet + local JSON backup
+> 🇫🇷 **France MVP Specialization:** Per client requirements, this pipeline is optimized specifically for French companies, targeting French websites, prioritizing French legal pages (e.g., *Mentions légales*), and extracting French phone formats (`+33` and `01-09` local formats).
 
 ---
 
-## Project Structure
+## 📋 Features
 
-```
-scrapping task/
-├── .env                    # Environment variables (Sheet ID, credentials path)
-├── credentials.json        # Google Service Account key (you provide this)
-├── requirements.txt        # Python dependencies
-├── config.py               # Loads environment configuration
-├── sheets_client.py        # Google Sheets API read/write operations
-├── enricher.py             # Multi-source search + website scraping engine
-├── cleaner.py              # Data cleaning (emails, phones, company names)
-├── scorer.py               # Lead quality scoring (0-100)
-├── main.py                 # Pipeline orchestrator
-├── enriched_leads_output.json  # Local backup of enriched results
-└── venv/                   # Python virtual environment
-```
+- **Google Sheets Integration:** Reads leads and writes enriched data back automatically.
+- **Smart Web Finder:** Searches websites via Clearbit Autocomplete, DuckDuckGo, and Bing, applying fuzzy matching to prevent incorrect domain selection.
+- **France-Prioritized Crawling:** Prioritizes crawling legally mandated French contact pages like *Mentions légales* and *Contactez-nous*.
+- **JS-Heavy Website Support:** Falls back to Playwright headless browser automation if a standard crawler fails to load page contents.
+- **Phone Validation:** Extracts and standardizes French phone numbers using the `phonenumbers` library.
+- **Confidence Scoring:** Assigns a 1-5 quality score and status labels (Verified, Enriched, Partial, Needs Review, Rejected).
 
 ---
 
-## Setup Instructions
+## 🗂️ Project File Structure
 
-### Prerequisites
-- Python 3.8 or higher
-- A Google Cloud project with **Google Sheets API** and **Google Drive API** enabled
-- A Google Service Account with a downloaded JSON credentials file
+- `main.py` — Pipeline coordinator (reads leads, calls enricher/cleaner, saves backup, writes back to Sheet).
+- `enricher.py` — Web scraping, searching (Clearbit, DDG, Bing), page crawling, and Playwright integration.
+- `cleaner.py` — Data cleaning/normalizing (replaces company suffixes, cleans emails/phones).
+- `scorer.py` — Scoring engine based on field availability.
+- `sheets_client.py` — Connection client to read/write from/to Google Sheets.
+- `config.py` — Loads all configurations from the `.env` file.
+- `sample_leads.json` — Sample French leads database to seed blank sheets.
+- `requirements.txt` — Python external dependency packages.
 
-### Step 1: Clone / Navigate to the project
-```bash
-cd "c:\Users\User\Desktop\New folder\scrapping task"
-```
+---
 
-### Step 2: Create a virtual environment
-```bash
+## ⚙️ Setup & Installation Instructions
+
+Follow these step-by-step instructions to configure and run the MVP.
+
+### 🔑 1. Required Credentials & Config Files
+
+You need **two main keys/files** placed in your project root folder:
+1. **`credentials.json`:** Your Google Cloud Service Account key file.
+2. **`.env`:** A configuration file defining your Google Sheet ID.
+
+---
+
+### Step 2 — Create and Activate a Virtual Environment
+
+Open your terminal in the project root folder and execute:
+
+```powershell
+# Create virtual environment
 python -m venv venv
-venv\Scripts\activate
+
+# Activate virtual environment (Windows PowerShell)
+.\venv\Scripts\activate
+
+# Activate virtual environment (macOS / Linux)
+source venv/bin/activate
 ```
 
-### Step 3: Install dependencies
+---
+
+### Step 3 — Install Dependencies
+
+Install the Python libraries listed in `requirements.txt`:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-### Step 4: Configure credentials
-1. Place your `credentials.json` file in the project root folder.
-2. Create a Google Sheet and copy its ID from the URL:
-   ```
-   https://docs.google.com/spreadsheets/d/<THIS_IS_THE_SHEET_ID>/edit
-   ```
-3. Share the Google Sheet with the service account email from `credentials.json` (give **Editor** access).
-4. Update the `.env` file with your Sheet ID:
-   ```env
-   GOOGLE_SHEET_ID=your_sheet_id_here
-   GOOGLE_SHEETS_CREDENTIALS_PATH=credentials.json
-   GOOGLE_SHEET_NAME=Sheet1
-   ```
+---
 
-### Step 5: Run the pipeline
+### Step 4 — Install Playwright Browser Binaries
+
+Playwright requires Chromium binaries for headless browsing. Install them by running:
+
+```bash
+playwright install chromium
+```
+*(If you run into permissions errors on Windows, run the terminal as Administrator or execute `python -m playwright install chromium`)*
+
+---
+
+### Step 5 — Setup Google Sheets API
+
+To connect the pipeline to your Google Sheet:
+
+#### 5a. Create a Google Cloud Project & Enable APIs
+1. Open the [Google Cloud Console](https://console.cloud.google.com/).
+2. Create a **New Project** and name it (e.g. `lead-enrichment-pipeline`).
+3. Navigate to **APIs & Services > Library**.
+4. Search for and enable **both** of the following APIs:
+   - ✅ **Google Sheets API**
+   - ✅ **Google Drive API**
+
+#### 5b. Generate a Service Account Key
+1. Go to **APIs & Services > Credentials**.
+2. Click **Create Credentials** and choose **Service Account**.
+3. Fill in the account name (e.g. `sheet-updater`) and click **Create and Continue**, then click **Done**.
+4. Click on your newly created service account email from the list.
+5. Select the **Keys** tab, click **Add Key > Create new key**, choose **JSON**, and click **Create**.
+6. A JSON key file will download. **Rename this file to `credentials.json`** and save it in the root folder of this project.
+
+#### 5c. Share the Google Sheet with the Service Account
+1. Open your target Google Sheet.
+2. Click **Share** in the top right.
+3. Open `credentials.json` and copy the `"client_email"` value (looks like `sheet-updater@yourproject.iam.gserviceaccount.com`).
+4. Paste it into the Share window, set their role to **Editor**, and click **Send**.
+
+---
+
+### Step 6 — Configure the Environment Variables (`.env`)
+
+Create a file named `.env` in the project root folder and paste the following content:
+
+```env
+# ── Google Sheets Setup ──────────────────────────────────────
+# The ID of your Google Sheet (extracted from its URL)
+GOOGLE_SHEET_ID=your_sheet_id_here
+GOOGLE_SHEETS_CREDENTIALS_PATH=credentials.json
+GOOGLE_SHEET_NAME=Sheet1
+
+# ── Seeding & Backups ───────────────────────────────────────
+# Set to "false" to prevent writing sample leads if sheet is blank
+SEED_SAMPLE_DATA=true
+OUTPUT_JSON_PATH=enriched_leads_output.json
+
+# ── Localization & Headers ──────────────────────────────────
+# Enforced country context for local phone number formatting
+DEFAULT_PHONE_COUNTRY=FR
+USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
+```
+
+> **Where to find the Google Sheet ID?**
+> In your browser's address bar when editing your sheet:
+> `https://docs.google.com/spreadsheets/d/[GOOGLE_SHEET_ID_IS_HERE]/edit`
+
+---
+
+## ▶️ How to Run the Pipeline
+
+Ensure your virtual environment is active, then run:
+
 ```bash
 python main.py
 ```
 
----
-
-## How It Works — Module by Module
-
-### `config.py`
-Loads environment variables from `.env` using `python-dotenv`. Stores Google Sheet credentials path, Sheet ID, sheet name, and the browser User-Agent string used for scraping.
-
-### `sheets_client.py`
-Handles all Google Sheets interactions:
-- **Authentication**: Connects via `gspread` using a service account
-- **Auto-initialization**: If the sheet is empty, it automatically creates column headers and populates sample company rows
-- **Read**: Fetches all rows as dictionaries
-- **Write**: Clears the sheet and writes enriched data back with headers
-- **Fallback**: If Sheets is unavailable, saves results to `enriched_leads_output.json`
-
-### `enricher.py`
-The core scraping engine with 4 data sources in priority order:
-1. **Clearbit Autocomplete API** — Free, no key needed, returns company domain instantly
-2. **DuckDuckGo Instant Answer API** — Returns structured data including official URLs
-3. **DuckDuckGo HTML Search** — Scrapes the lite HTML search page
-4. **Bing Search** — Last resort web search
-
-Once a website is found, it crawls:
-- The homepage
-- Up to 3 subpages (`/contact`, `/about`, `/team`, `/support`)
-- Extracts emails (regex + `mailto:` links), phones (regex + `tel:` links), and LinkedIn URLs
-
-### `cleaner.py`
-Data cleaning utilities:
-- `clean_company_name()` — Strips suffixes like "LLC", "Inc.", "Corp."
-- `clean_email()` — Validates email format using regex
-- `clean_phone()` — Keeps only digits and leading `+`
-- `deduplicate_leads()` — Removes duplicate company entries
-
-### `scorer.py`
-Grades lead quality from 0 to 100:
-| Field    | Points |
-|----------|--------|
-| Email    | +35    |
-| Phone    | +25    |
-| LinkedIn | +25    |
-| Website  | +15    |
-
-Status labels:
-- **High Quality**: Score ≥ 75
-- **Medium Quality**: Score ≥ 40
-- **Low Quality**: Score > 0
-- **Needs Review**: Score = 0
-
-### `main.py`
-Orchestrates the full pipeline:
-1. Connects to Google Sheets
-2. Reads lead rows
-3. Deduplicates
-4. Enriches each company (with progress logging)
-5. Saves local JSON backup
-6. Writes back to Google Sheets
-7. Prints a results summary table
+### Initial Run & Seeding:
+If the sheet is completely blank, the pipeline will initialize it by writing the standard column headers. If `SEED_SAMPLE_DATA` is `true`, it will auto-populate the sheet with 25 French test companies from `sample_leads.json`. Run the script a second time to begin crawling and enriching those companies.
 
 ---
 
-## Example Output
+## 🔒 Security Notes
 
-```
-=============================================
-      Lead Enrichment Pipeline Start
-=============================================
-
-Successfully connected to Google Sheet: 1W1m...
-Loaded 4 raw company rows.
-After deduplication: 4 unique companies.
-
---- [1/4] Google ---
-  Enriching: Google
-  [1/4] Checking Clearbit...
-  [Clearbit] Found: https://google.com
-  Crawling website for contacts...
-  Done: website=True, email=False, phone=True, linkedin=True
-
---- [2/4] Microsoft ---
-  ...
-
-=============================================
-               RESULTS SUMMARY
-=============================================
-  Google                    | Score:  65 | Medium Quality
-  Microsoft                 | Score:  65 | Medium Quality
-  Apple                     | Score:  65 | Medium Quality
-  GitHub                    | Score:  40 | Medium Quality
-=============================================
-```
-
----
-
-## Current Limitations (MVP)
-
-- Does not handle JavaScript-rendered pages (uses static HTML parsing)
-- Search engines may rate-limit after many requests
-- Email extraction depends on emails being visible in page HTML
-- No CRM integration yet (PerfexCRM planned for future phase)
-
----
-
-## Future Enhancements
-
-- [ ] PerfexCRM API integration (auto-sync high-quality leads)
-- [ ] Proxy rotation for large-scale scraping
-- [ ] JavaScript rendering support (Playwright/Selenium)
-- [ ] Email verification API integration (Hunter.io / ZeroBounce)
-- [ ] Scheduling via cron / task scheduler
-- [ ] Dashboard / web UI for monitoring
+- **Never commit credentials:** Both `.env` and `credentials.json` are listed in `.gitignore` to prevent committing secrets to version control.
+- **No external API costs:** No paid Search APIs (e.g. ZenRows, Google Search API) are required. The script crawls using free, open-access search scrapers.

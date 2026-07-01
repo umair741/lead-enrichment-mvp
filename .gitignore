@@ -1,6 +1,18 @@
+# Secrets & credentials — NEVER commit these
 .env
 credentials.json
-venv/
-enriched_leads_output.json
+
+# Python
 __pycache__/
-pyc
+*.py[cod]
+*.pyo
+venv/
+.venv/
+
+# Output files
+enriched_leads_output.json
+
+# IDE
+.vscode/
+.idea/
+*.DS_Store

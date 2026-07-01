@@ -1,9 +1,44 @@
 import re
 import time
+import difflib
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 import config
+
+
+def company_name_matches_domain(company_name, domain):
+    """
+    Verifies that a found domain is actually plausible for the given company name.
+    Prevents wrong matches like 'Effy' -> 'effyjewelry.com'.
+    Returns True if the domain's core name reasonably matches the company name.
+    """
+    if not company_name or not domain:
+        return False
+
+    # Normalize: lowercase, strip common suffixes, remove spaces/punctuation
+    def normalize(s):
+        s = s.lower()
+        s = re.sub(r"\b(llc|inc|corp|corporation|co|ltd|group|sa|sas|sarl)\b", "", s)
+        s = re.sub(r"[^a-z0-9]", "", s)
+        return s
+
+    clean_name = normalize(company_name)
+    # Extract just the domain name without TLD/subdomain
+    domain_core = domain.lower().replace("www.", "").split(".")[0]
+    domain_core = re.sub(r"[^a-z0-9]", "", domain_core)
+
+    if not clean_name or not domain_core:
+        return False
+
+    # Exact substring match either way = good match
+    if clean_name in domain_core or domain_core in clean_name:
+        return True
+
+    # Fuzzy similarity check for slight variations
+    similarity = difflib.SequenceMatcher(None, clean_name, domain_core).ratio()
+    return similarity >= 0.6
 
 
 class LeadEnricher:
@@ -15,9 +50,6 @@ class LeadEnricher:
             "Accept-Language": "en-US,en;q=0.5",
         })
 
-    # ------------------------------------------------------------------ #
-    #  SOURCE 1: Clearbit Autocomplete API (free, no key needed)
-    # ------------------------------------------------------------------ #
     def search_clearbit(self, company_name):
         try:
             url = "https://autocomplete.clearbit.com/v1/companies/suggest"
@@ -36,9 +68,6 @@ class LeadEnricher:
             print(f"  [Clearbit] Failed for '{company_name}': {e}")
         return {}
 
-    # ------------------------------------------------------------------ #
-    #  SOURCE 2: DuckDuckGo Instant Answer API
-    # ------------------------------------------------------------------ #
     def search_duckduckgo_instant(self, company_name):
         try:
             url = "https://api.duckduckgo.com/"
@@ -69,9 +98,6 @@ class LeadEnricher:
             print(f"  [DDG Instant] Failed for '{company_name}': {e}")
         return ""
 
-    # ------------------------------------------------------------------ #
-    #  SOURCE 3: DuckDuckGo HTML Search
-    # ------------------------------------------------------------------ #
     def search_duckduckgo_html(self, query):
         urls = []
         try:
@@ -103,9 +129,6 @@ class LeadEnricher:
             print(f"  [DDG HTML] Search failed for '{query}': {e}")
         return urls
 
-    # ------------------------------------------------------------------ #
-    #  SOURCE 4: Bing Search
-    # ------------------------------------------------------------------ #
     def search_bing(self, query):
         urls = []
         try:
@@ -121,15 +144,11 @@ class LeadEnricher:
             print(f"  [Bing] Search failed for '{query}': {e}")
         return urls
 
-    # ------------------------------------------------------------------ #
-    #  HTML Parsing: Extract emails, phones, LinkedIn
-    # ------------------------------------------------------------------ #
     def parse_page_content(self, html):
         data = {"emails": [], "phones": [], "linkedin": ""}
         soup = BeautifulSoup(html, "html.parser")
         page_text = soup.get_text(separator=" ")
 
-        # Emails
         email_pattern = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
         all_emails = re.findall(email_pattern, page_text)
         for a_tag in soup.find_all("a", href=True):
@@ -140,9 +159,10 @@ class LeadEnricher:
                     all_emails.insert(0, email)
         data["emails"] = list(dict.fromkeys(all_emails))
 
-        # Phones
+        # French + English phone patterns
         phone_patterns = [
             r"\+?1?\s*\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}",
+            r"(?:\+33|0)[1-9](?:[\s.-]*\d{2}){4}",  # French format
             r"\+?\d{1,4}[\s.-]?\(?\d{1,5}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}",
         ]
         for pattern in phone_patterns:
@@ -155,7 +175,6 @@ class LeadEnricher:
                 data["phones"].insert(0, phone)
         data["phones"] = list(dict.fromkeys(data["phones"]))
 
-        # LinkedIn
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
             if "linkedin.com/company/" in href:
@@ -166,10 +185,12 @@ class LeadEnricher:
 
         return data
 
-    # ------------------------------------------------------------------ #
-    #  Website Crawling: homepage + hardcoded + discovered subpages
-    # ------------------------------------------------------------------ #
     def crawl_website(self, base_url):
+        """
+        Crawls homepage + dynamically discovered contact/about pages.
+        Uses real links found on the page (works for French, English, any language)
+        instead of guessing hardcoded English paths.
+        """
         combined = {"emails": [], "phones": [], "linkedin": ""}
 
         if not base_url.startswith("http"):
@@ -177,7 +198,6 @@ class LeadEnricher:
 
         pages_to_check = [base_url]
 
-        # 1. Fetch homepage
         try:
             response = self.session.get(base_url, timeout=10, allow_redirects=True)
             if response.status_code != 200:
@@ -190,39 +210,40 @@ class LeadEnricher:
             if homepage_data["linkedin"]:
                 combined["linkedin"] = homepage_data["linkedin"]
 
-            # Hardcoded common subpages - try regardless of homepage links
-            base = base_url.rstrip("/")
-            hardcoded_subpages = [
-                base + "/contact",
-                base + "/contact-us",
-                base + "/about",
-                base + "/about-us",
-                base + "/team",
-                base + "/support",
+            # Dynamic link discovery - works regardless of language
+            # Matches both URL slugs and visible link text
+            keywords = [
+                "contact", "contactez", "contacter", "nous-contacter",
+                "about", "a-propos", "apropos", "qui-sommes",
+                "team", "equipe", "groupe",
+                "support", "mentions", "legal", "mentions-legales",
             ]
-            for hp in hardcoded_subpages:
-                if hp not in pages_to_check:
-                    pages_to_check.append(hp)
 
-            # Also discover links from homepage
             soup = BeautifulSoup(response.text, "html.parser")
-            subpage_keywords = ["contact", "about", "team", "support", "impressum"]
+            base_domain = urllib.parse.urlparse(base_url).netloc
             found_subpages = set()
+
             for link in soup.find_all("a", href=True):
-                href_lower = link["href"].lower()
-                for keyword in subpage_keywords:
-                    if keyword in href_lower and href_lower not in found_subpages:
-                        full_url = urllib.parse.urljoin(base_url, link["href"])
-                        if full_url != base_url and full_url not in pages_to_check:
-                            found_subpages.add(full_url)
-                            pages_to_check.append(full_url)
-                        break
+                href = link["href"]
+                link_text = link.get_text().strip().lower()
+                full_url = urllib.parse.urljoin(base_url, href)
+
+                # Stay on same domain
+                if urllib.parse.urlparse(full_url).netloc != base_domain:
+                    continue
+                if full_url == base_url or full_url in found_subpages:
+                    continue
+
+                url_lower = full_url.lower()
+                if any(kw in url_lower or kw in link_text for kw in keywords):
+                    found_subpages.add(full_url)
+                    pages_to_check.append(full_url)
 
         except Exception as e:
             print(f"  [Crawl] Failed to fetch homepage {base_url}: {e}")
             return combined
 
-        # 2. Crawl subpages (limit to 7)
+        # Crawl up to 6 discovered subpages
         for subpage_url in pages_to_check[1:7]:
             try:
                 time.sleep(0.5)
@@ -237,14 +258,42 @@ class LeadEnricher:
             except Exception as e:
                 print(f"  [Crawl] Failed subpage {subpage_url}: {e}")
 
-        # Deduplicate
         combined["emails"] = list(dict.fromkeys(combined["emails"]))
         combined["phones"] = list(dict.fromkeys(combined["phones"]))
+
+        # ---- Playwright fallback: only if fast crawl found nothing ----
+        if not combined["emails"] and not combined["phones"]:
+            print(f"  [Fallback] No data via requests, trying Playwright on {base_url}...")
+            html = self.crawl_with_playwright(base_url)
+            if html:
+                pw_data = self.parse_page_content(html)
+                combined["emails"].extend(pw_data["emails"])
+                combined["phones"].extend(pw_data["phones"])
+                if not combined["linkedin"] and pw_data["linkedin"]:
+                    combined["linkedin"] = pw_data["linkedin"]
+                combined["emails"] = list(dict.fromkeys(combined["emails"]))
+                combined["phones"] = list(dict.fromkeys(combined["phones"]))
+
         return combined
 
-    # ------------------------------------------------------------------ #
-    #  Pick best email
-    # ------------------------------------------------------------------ #
+    def crawl_with_playwright(self, url):
+        """
+        Fallback: renders JavaScript using a headless browser and returns full HTML.
+        Used only when the fast requests-based crawl finds no email/phone.
+        """
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page(user_agent=config.USER_AGENT)
+                page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                page.wait_for_timeout(2000)
+                html = page.content()
+                browser.close()
+                return html
+        except Exception as e:
+            print(f"  [Playwright] Failed for {url}: {e}")
+            return ""
+
     def pick_best_email(self, emails):
         if not emails:
             return ""
@@ -256,9 +305,6 @@ class LeadEnricher:
                 return email
         return emails[0]
 
-    # ------------------------------------------------------------------ #
-    #  Main enrichment orchestrator
-    # ------------------------------------------------------------------ #
     def enrich_company(self, company_name, existing_website=None):
         print(f"  Enriching: {company_name}")
         enriched = {
@@ -278,15 +324,23 @@ class LeadEnricher:
             print(f"  [1/4] Checking Clearbit...")
             clearbit_result = self.search_clearbit(company_name)
             if clearbit_result.get("domain"):
-                website = "https://" + clearbit_result["domain"]
-                print(f"  [Clearbit] Found: {website}")
+                candidate = "https://" + clearbit_result["domain"]
+                if company_name_matches_domain(company_name, clearbit_result["domain"]):
+                    website = candidate
+                    print(f"  [Clearbit] Found: {website}")
+                else:
+                    print(f"  [Clearbit] Rejected mismatch: {candidate} doesn't match '{company_name}'")
 
         if not website and company_name:
             print(f"  [2/4] Checking DuckDuckGo API...")
             ddg_url = self.search_duckduckgo_instant(company_name)
             if ddg_url:
-                website = ddg_url
-                print(f"  [DDG API] Found: {website}")
+                domain = urllib.parse.urlparse(ddg_url).netloc
+                if company_name_matches_domain(company_name, domain):
+                    website = ddg_url
+                    print(f"  [DDG API] Found: {website}")
+                else:
+                    print(f"  [DDG API] Rejected mismatch: {ddg_url} doesn't match '{company_name}'")
 
         if not website and company_name:
             print(f"  [3/4] Searching DuckDuckGo HTML...")
@@ -294,10 +348,15 @@ class LeadEnricher:
             ignored = ["duckduckgo.com", "linkedin.com", "facebook.com",
                        "twitter.com", "yelp.com", "yellowpages.com", "wikipedia.org"]
             for url in ddg_urls:
-                if not any(domain in url for domain in ignored):
+                if any(domain in url for domain in ignored):
+                    continue
+                domain = urllib.parse.urlparse(url).netloc
+                if company_name_matches_domain(company_name, domain):
                     website = url
                     print(f"  [DDG HTML] Found: {website}")
                     break
+                else:
+                    print(f"  [DDG HTML] Skipping mismatch: {url}")
 
         if not website and company_name:
             print(f"  [4/4] Searching Bing...")
@@ -305,15 +364,19 @@ class LeadEnricher:
             ignored = ["linkedin.com", "facebook.com", "twitter.com",
                        "yelp.com", "yellowpages.com", "wikipedia.org"]
             for url in bing_urls:
-                if not any(domain in url for domain in ignored):
+                if any(domain in url for domain in ignored):
+                    continue
+                domain = urllib.parse.urlparse(url).netloc
+                if company_name_matches_domain(company_name, domain):
                     website = url
                     print(f"  [Bing] Found: {website}")
                     break
+                else:
+                    print(f"  [Bing] Skipping mismatch: {url}")
 
         enriched["website"] = website
         enriched["source_url"] = website
 
-        # Crawl website for contacts
         if website:
             print(f"  Crawling website for contacts...")
             crawl_data = self.crawl_website(website)
@@ -323,7 +386,6 @@ class LeadEnricher:
             if crawl_data.get("linkedin"):
                 enriched["linkedin"] = crawl_data["linkedin"]
 
-        # Find LinkedIn separately if not found
         if not enriched["linkedin"]:
             print(f"  Searching for LinkedIn page...")
             slug = company_name.lower().replace(" ", "-").replace(".", "")
